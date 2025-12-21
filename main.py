@@ -6,14 +6,14 @@ import time
 
 # Create a HandLandmarker object.
 class KalmanFilter:
-    def __init__(self, dt=0.1, u_x=0, u_y=0, std_acc=1, x_std_meas=0.1, y_std_meas=0.1):
+    def __init__(self, dt=0.1, u=0, std_acc=1, std_meas=0.1):
         self.dt = dt
-        self.u = np.array([[u_x], [u_y]])
+        self.u = u
         self.A = np.array([[1, self.dt], [0, 1]])
         self.B = np.array([[(self.dt**2)/2], [self.dt]])
         self.H = np.array([[1, 0]])
         self.Q = np.array([[(self.dt**4)/4, (self.dt**3)/2], [(self.dt**3)/2, self.dt**2]]) * std_acc**2
-        self.R = np.array([[x_std_meas**2]])
+        self.R = np.array([[std_meas**2]])
         self.P = np.zeros((2, 2))
         self.x = np.zeros((2, 1))
 
@@ -86,8 +86,8 @@ is_dragging = False
 
 # Motion smoothing variables
 frame_timestamp_ms = 0
-kf_x = KalmanFilter(dt=0.1, std_acc=1, x_std_meas=0.1, y_std_meas=0.1)
-kf_y = KalmanFilter(dt=0.1, std_acc=1, x_std_meas=0.1, y_std_meas=0.1)
+kf_x = KalmanFilter(dt=0.1, std_acc=1, std_meas=0.1)
+kf_y = KalmanFilter(dt=0.1, std_acc=1, std_meas=0.1)
 
 with HandLandmarker.create_from_options(options) as landmarker:
     while cap.isOpened():
