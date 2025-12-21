@@ -131,15 +131,15 @@ with HandLandmarker.create_from_options(options) as landmarker:
             y = int((index_finger_tip.y - 0.5) * effective_scale * screen_height + screen_height / 2)
 
             # Clamp coordinates to screen boundaries
-            x = np.clip(x, 0, screen_width)
-            y = np.clip(y, 0, screen_height)
+            x = np.clip(x, 1, screen_width - 1)
+            y = np.clip(y, 1, screen_height - 1)
 
             # Apply Kalman Filter for smoothing
             kf_x.predict()
-            smoothed_x = int(kf_x.update(x)[0])
+            smoothed_x = int(kf_x.update(x)[0, 0])
 
             kf_y.predict()
-            smoothed_y = int(kf_y.update(y)[0])
+            smoothed_y = int(kf_y.update(y)[0, 0])
 
             # Move the mouse cursor to the smoothed position
             pyautogui.moveTo(smoothed_x, smoothed_y)
