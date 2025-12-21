@@ -6,7 +6,13 @@ GestureControl OS is a Python application that allows you to control your comput
 
 - **Cursor Control:** Move the mouse cursor by moving your hand.
 - **Clicking:** Perform a pinching gesture with your thumb and index finger to click.
-- **Smooth Motion:** An Exponential Moving Average (EMA) filter is used to smooth the cursor's movement.
+- **Dragging:** Make a fist to drag and drop.
+- **Smooth Motion:** A Kalman filter is used to smooth the cursor's movement.
+
+## Advanced Features
+
+- **Sensitivity Control:** Adjust the `SENSITIVITY` variable in `main.py` to change the cursor's speed.
+- **Motion Scaling:** Modify the `MOTION_SCALE` variable in `main.py` to control the mapping of hand movement to the screen, reducing the need for large arm movements.
 
 ## Requirements
 

@@ -5,6 +5,55 @@ import numpy as np
 import time
 
 # Create a HandLandmarker object.
+class KalmanFilter:
+    def __init__(self, dt=0.1, u_x=0, u_y=0, std_acc=1, x_std_meas=0.1, y_std_meas=0.1):
+        self.dt = dt
+        self.u = np.array([[u_x], [u_y]])
+        self.A = np.array([[1, self.dt], [0, 1]])
+        self.B = np.array([[(self.dt**2)/2], [self.dt]])
+        self.H = np.array([[1, 0]])
+        self.Q = np.array([[(self.dt**4)/4, (self.dt**3)/2], [(self.dt**3)/2, self.dt**2]]) * std_acc**2
+        self.R = np.array([[x_std_meas**2]])
+        self.P = np.zeros((2, 2))
+        self.x = np.zeros((2, 1))
+
+    def predict(self):
+        self.x = np.dot(self.A, self.x) + np.dot(self.B, self.u)
+        self.P = np.dot(np.dot(self.A, self.P), self.A.T) + self.Q
+        return self.x
+
+    def update(self, z):
+        S = np.dot(self.H, np.dot(self.P, self.H.T)) + self.R
+        K = np.dot(self.P, np.dot(self.H.T, np.linalg.inv(S)))
+        self.x = self.x + np.dot(K, (z - np.dot(self.H, self.x)))
+        self.P = self.P - np.dot(K, np.dot(S, K.T))
+        return self.x
+
+def detect_gesture(landmarks):
+    if not landmarks:
+        return 'no_hand'
+
+    thumb_tip = landmarks[4]
+    index_finger_tip = landmarks[8]
+    middle_finger_tip = landmarks[12]
+    ring_finger_tip = landmarks[16]
+    pinky_tip = landmarks[20]
+    wrist = landmarks[0]
+
+    # Click gesture
+    click_distance = np.sqrt((thumb_tip.x - index_finger_tip.x)**2 + (thumb_tip.y - index_finger_tip.y)**2)
+    if click_distance < CLICK_THRESHOLD:
+        return 'click'
+
+    # Fist gesture
+    fist_distance = (np.sqrt((middle_finger_tip.x - wrist.x)**2 + (middle_finger_tip.y - wrist.y)**2) +
+                     np.sqrt((ring_finger_tip.x - wrist.x)**2 + (ring_finger_tip.y - wrist.y)**2) +
+                     np.sqrt((pinky_tip.x - wrist.x)**2 + (pinky_tip.y - wrist.y)**2)) / 3
+    if fist_distance < FIST_THRESHOLD:
+        return 'fist'
+
+    return 'open_palm'
+
 HandLandmarker = mp.tasks.vision.HandLandmarker
 HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
 HandLandmarkerResult = mp.tasks.vision.HandLandmarkerResult
@@ -27,6 +76,8 @@ frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
 # Gesture variables
+SENSITIVITY = 1.5  # Adjust this value to change cursor speed
+MOTION_SCALE = 1.2  # Adjust this value to change hand movement mapping
 CLICK_THRESHOLD = 0.05
 FIST_THRESHOLD = 0.1
 last_click_time = 0
@@ -34,9 +85,9 @@ CLICK_COOLDOWN = 0.5
 is_dragging = False
 
 # Motion smoothing variables
-alpha = 0.5  # Smoothing factor (0 < alpha < 1)
-prev_x, prev_y = 0, 0
 frame_timestamp_ms = 0
+kf_x = KalmanFilter(dt=0.1, std_acc=1, x_std_meas=0.1, y_std_meas=0.1)
+kf_y = KalmanFilter(dt=0.1, std_acc=1, x_std_meas=0.1, y_std_meas=0.1)
 
 with HandLandmarker.create_from_options(options) as landmarker:
     while cap.isOpened():
@@ -59,6 +110,7 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
         # Draw the hand annotations on the image.
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        gesture = 'no_hand'
         if detection_result.hand_landmarks:
             for hand_landmarks in detection_result.hand_landmarks:
                 for landmark in hand_landmarks:
@@ -74,48 +126,49 @@ with HandLandmarker.create_from_options(options) as landmarker:
             wrist = hand_landmarks[0] # WRIST
 
             # Convert normalized coordinates to screen coordinates
-            x = int(index_finger_tip.x * screen_width)
-            y = int(index_finger_tip.y * screen_height)
+            effective_scale = SENSITIVITY * MOTION_SCALE
+            x = int((index_finger_tip.x - 0.5) * effective_scale * screen_width + screen_width / 2)
+            y = int((index_finger_tip.y - 0.5) * effective_scale * screen_height + screen_height / 2)
 
-            # Apply EMA for smoothing
-            if prev_x == 0 and prev_y == 0:
-                prev_x, prev_y = x, y
+            # Clamp coordinates to screen boundaries
+            x = np.clip(x, 0, screen_width)
+            y = np.clip(y, 0, screen_height)
 
-            smoothed_x = int(alpha * x + (1 - alpha) * prev_x)
-            smoothed_y = int(alpha * y + (1 - alpha) * prev_y)
+            # Apply Kalman Filter for smoothing
+            kf_x.predict()
+            smoothed_x = int(kf_x.update(x)[0])
+
+            kf_y.predict()
+            smoothed_y = int(kf_y.update(y)[0])
 
             # Move the mouse cursor to the smoothed position
             pyautogui.moveTo(smoothed_x, smoothed_y)
-            prev_x, prev_y = smoothed_x, smoothed_y
 
-            # Click gesture
-            click_distance = np.sqrt((thumb_tip.x - index_finger_tip.x)**2 + (thumb_tip.y - index_finger_tip.y)**2)
+            # Gesture recognition
+            gesture = detect_gesture(hand_landmarks)
             current_time = time.time()
-            if click_distance < CLICK_THRESHOLD and (current_time - last_click_time) > CLICK_COOLDOWN:
+
+            if gesture == 'click' and (current_time - last_click_time) > CLICK_COOLDOWN:
                 pyautogui.click()
                 last_click_time = current_time
-
-            # Drag and drop gesture (fist)
-            fist_distance = (np.sqrt((middle_finger_tip.x - wrist.x)**2 + (middle_finger_tip.y - wrist.y)**2) +
-                             np.sqrt((ring_finger_tip.x - wrist.x)**2 + (ring_finger_tip.y - wrist.y)**2) +
-                             np.sqrt((pinky_tip.x - wrist.x)**2 + (pinky_tip.y - wrist.y)**2)) / 3
-
-            if fist_distance < FIST_THRESHOLD:
+            elif gesture == 'fist':
                 if not is_dragging:
                     pyautogui.mouseDown()
                     is_dragging = True
-            else:
+            elif gesture == 'open_palm':
                 if is_dragging:
                     pyautogui.mouseUp()
                     is_dragging = False
-
         else:
-            # Reset previous position and dragging state if no hand is detected
-            prev_x, prev_y = 0, 0
+            # Reset dragging state if no hand is detected
             if is_dragging:
                 pyautogui.mouseUp()
                 is_dragging = False
 
+
+        # Display gesture guide
+        cv2.putText(image, f"Gesture: {gesture}", (10, frame_height - 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(image, "Gestures: click, fist, open_palm", (10, frame_height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
         cv2.imshow('GestureControl OS', image)
         if cv2.waitKey(5) & 0xFF == 27:
