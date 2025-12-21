@@ -3,6 +3,10 @@ import mediapipe as mp
 import pyautogui
 import numpy as np
 import time
+import json
+import threading
+from gui import launch_gui
+from config import DEFAULT_CONFIG
 
 # Create a HandLandmarker object.
 class KalmanFilter:
@@ -29,7 +33,11 @@ class KalmanFilter:
         self.P = self.P - np.dot(K, np.dot(S, K.T))
         return self.x
 
-def detect_gesture(landmarks):
+def detect_gesture(landmarks, config, lock):
+    with lock:
+        click_threshold = config['CLICK_THRESHOLD']
+        fist_threshold = config['FIST_THRESHOLD']
+
     if not landmarks:
         return 'no_hand'
 
@@ -42,14 +50,14 @@ def detect_gesture(landmarks):
 
     # Click gesture
     click_distance = np.sqrt((thumb_tip.x - index_finger_tip.x)**2 + (thumb_tip.y - index_finger_tip.y)**2)
-    if click_distance < CLICK_THRESHOLD:
+    if click_distance < click_threshold:
         return 'click'
 
     # Fist gesture
     fist_distance = (np.sqrt((middle_finger_tip.x - wrist.x)**2 + (middle_finger_tip.y - wrist.y)**2) +
                      np.sqrt((ring_finger_tip.x - wrist.x)**2 + (ring_finger_tip.y - wrist.y)**2) +
                      np.sqrt((pinky_tip.x - wrist.x)**2 + (pinky_tip.y - wrist.y)**2)) / 3
-    if fist_distance < FIST_THRESHOLD:
+    if fist_distance < fist_threshold:
         return 'fist'
 
     return 'open_palm'
@@ -75,11 +83,18 @@ cap = cv2.VideoCapture(0)
 frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+def load_config(lock):
+    with lock:
+        try:
+            with open("config.json", "r") as f:
+                config = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            config = DEFAULT_CONFIG
+        return config
+
 # Gesture variables
-SENSITIVITY = 1.5  # Adjust this value to change cursor speed
-MOTION_SCALE = 1.2  # Adjust this value to change hand movement mapping
-CLICK_THRESHOLD = 0.05
-FIST_THRESHOLD = 0.1
+config_lock = threading.Lock()
+config = load_config(config_lock)
 last_click_time = 0
 CLICK_COOLDOWN = 0.5
 is_dragging = False
@@ -88,6 +103,11 @@ is_dragging = False
 frame_timestamp_ms = 0
 kf_x = KalmanFilter(dt=0.1, std_acc=1, std_meas=0.1)
 kf_y = KalmanFilter(dt=0.1, std_acc=1, std_meas=0.1)
+
+# Launch the GUI in a separate thread
+gui_thread = threading.Thread(target=launch_gui, args=(config, config_lock))
+gui_thread.daemon = True
+gui_thread.start()
 
 with HandLandmarker.create_from_options(options) as landmarker:
     while cap.isOpened():
@@ -119,14 +139,13 @@ with HandLandmarker.create_from_options(options) as landmarker:
 
             # Get the coordinates of key landmarks
             index_finger_tip = hand_landmarks[8] # INDEX_FINGER_TIP
-            thumb_tip = hand_landmarks[4] # THUMB_TIP
-            middle_finger_tip = hand_landmarks[12] # MIDDLE_FINGER_TIP
-            ring_finger_tip = hand_landmarks[16] # RING_FINGER_TIP
-            pinky_tip = hand_landmarks[20] # PINKY_TIP
-            wrist = hand_landmarks[0] # WRIST
+
+            with config_lock:
+                sensitivity = config['SENSITIVITY']
+                motion_scale = config['MOTION_SCALE']
 
             # Convert normalized coordinates to screen coordinates
-            effective_scale = SENSITIVITY * MOTION_SCALE
+            effective_scale = sensitivity * motion_scale
             x = int((index_finger_tip.x - 0.5) * effective_scale * screen_width + screen_width / 2)
             y = int((index_finger_tip.y - 0.5) * effective_scale * screen_height + screen_height / 2)
 
@@ -145,7 +164,7 @@ with HandLandmarker.create_from_options(options) as landmarker:
             pyautogui.moveTo(smoothed_x, smoothed_y)
 
             # Gesture recognition
-            gesture = detect_gesture(hand_landmarks)
+            gesture = detect_gesture(hand_landmarks, config, config_lock)
             current_time = time.time()
 
             if gesture == 'click' and (current_time - last_click_time) > CLICK_COOLDOWN:
