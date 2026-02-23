@@ -141,6 +141,8 @@ class GestureController:
         with self.config_lock:
             sensitivity = self.config['SENSITIVITY']
             motion_scale = self.config['MOTION_SCALE']
+            movement_deadzone = self.config['MOVEMENT_DEADZONE']
+            max_acceleration = max(1.0, self.config['MAX_ACCELERATION'])
 
         if self.prev_tip_x is None or self.prev_tip_y is None:
             self.prev_tip_x = index_finger_tip.x
@@ -157,7 +159,11 @@ class GestureController:
 
         base_scale = sensitivity * motion_scale
         motion_speed = np.sqrt(delta_x**2 + delta_y**2)
-        acceleration = 1.0 + min(3.0, motion_speed * 18.0)
+        if motion_speed < movement_deadzone:
+            return
+
+        effective_speed = motion_speed - movement_deadzone
+        acceleration = 1.0 + min(max_acceleration - 1.0, effective_speed * 25.0)
         effective_scale = base_scale * acceleration
 
         self.cursor_x += delta_x * self.screen_width * effective_scale

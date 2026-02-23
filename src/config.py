@@ -4,6 +4,8 @@ DEFAULT_CONFIG = {
     "SENSITIVITY": 1.5,
     "MOTION_SCALE": 1.2,
     "CLICK_THRESHOLD": 0.05,
+    "MOVEMENT_DEADZONE": 0.003,
+    "MAX_ACCELERATION": 3.0,
 }
 
 def load_config():
