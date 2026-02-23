@@ -36,6 +36,7 @@ class KalmanFilter:
 
 class GestureController:
     def __init__(self):
+        self.safe_margin = 10
         self.config = load_config()
         self.config_lock = threading.Lock()
         self.screen_width, self.screen_height = pyautogui.size()
@@ -66,6 +67,32 @@ class GestureController:
             base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
             running_mode=VisionRunningMode.VIDEO)
         self.landmarker = HandLandmarker.create_from_options(options)
+
+    def _clip_to_safe_area(self, x, y):
+        min_x = self.safe_margin
+        min_y = self.safe_margin
+        max_x = self.screen_width - self.safe_margin
+        max_y = self.screen_height - self.safe_margin
+        safe_x = int(np.clip(x, min_x, max_x))
+        safe_y = int(np.clip(y, min_y, max_y))
+        return safe_x, safe_y
+
+    def safe_move_to(self, x, y):
+        safe_x, safe_y = self._clip_to_safe_area(x, y)
+        try:
+            pyautogui.moveTo(safe_x, safe_y)
+            self.cursor_x = safe_x
+            self.cursor_y = safe_y
+        except pyautogui.FailSafeException:
+            self.cursor_x, self.cursor_y = pyautogui.position()
+
+    def safe_click(self):
+        try:
+            pyautogui.click()
+            return True
+        except pyautogui.FailSafeException:
+            self.cursor_x, self.cursor_y = pyautogui.position()
+            return False
 
     def detect_gesture(self, landmarks):
         with self.config_lock:
@@ -172,8 +199,7 @@ class GestureController:
         x = int(self.cursor_x)
         y = int(self.cursor_y)
 
-        x = np.clip(x, 1, self.screen_width - 1)
-        y = np.clip(y, 1, self.screen_height - 1)
+        x, y = self._clip_to_safe_area(x, y)
         self.cursor_x = x
         self.cursor_y = y
 
@@ -182,16 +208,16 @@ class GestureController:
         self.kf_y.predict(dt)
         smoothed_y = int(self.kf_y.update(y)[0, 0])
 
-        pyautogui.moveTo(smoothed_x, smoothed_y)
+        self.safe_move_to(smoothed_x, smoothed_y)
 
     def handle_gestures(self, gesture):
         current_time = time.time()
         CLICK_COOLDOWN = 0.25
 
         if gesture == 'click' and self.click_armed and (current_time - self.last_click_time) > CLICK_COOLDOWN:
-            pyautogui.click()
-            self.last_click_time = current_time
-            self.click_armed = False
+            if self.safe_click():
+                self.last_click_time = current_time
+                self.click_armed = False
         elif gesture == 'move':
             self.click_armed = True
 
