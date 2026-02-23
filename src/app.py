@@ -47,8 +47,11 @@ class GestureController:
         self.kf_y = KalmanFilter()
 
         self.last_click_time = 0
-        self.is_dragging = False
+        self.click_armed = True
         self.running = True
+        self.cursor_x, self.cursor_y = pyautogui.position()
+        self.prev_tip_x = None
+        self.prev_tip_y = None
 
         self.prev_time = time.time()
         self.fps = 0
@@ -67,31 +70,18 @@ class GestureController:
     def detect_gesture(self, landmarks):
         with self.config_lock:
             click_threshold = self.config['CLICK_THRESHOLD']
-            fist_threshold = self.config['FIST_THRESHOLD']
 
         if not landmarks:
             return 'no_hand'
 
         thumb_tip = landmarks[4]
         index_finger_tip = landmarks[8]
-        middle_finger_tip = landmarks[12]
-        ring_finger_tip = landmarks[16]
-        pinky_tip = landmarks[20]
-        wrist = landmarks[0]
-
-        # Click gesture
+        # Click gesture (thumb + index pinch)
         click_distance = np.sqrt((thumb_tip.x - index_finger_tip.x)**2 + (thumb_tip.y - index_finger_tip.y)**2)
         if click_distance < click_threshold:
             return 'click'
 
-        # Fist gesture
-        fist_distance = (np.sqrt((middle_finger_tip.x - wrist.x)**2 + (middle_finger_tip.y - wrist.y)**2) +
-                         np.sqrt((ring_finger_tip.x - wrist.x)**2 + (ring_finger_tip.y - wrist.y)**2) +
-                         np.sqrt((pinky_tip.x - wrist.x)**2 + (pinky_tip.y - wrist.y)**2)) / 3
-        if fist_distance < fist_threshold:
-            return 'fist'
-
-        return 'open_palm'
+        return 'move'
 
     def run(self):
         gui_thread = threading.Thread(target=launch_gui, args=(self.config, self.config_lock, self.stop))
@@ -120,14 +110,15 @@ class GestureController:
 
             if detection_result.hand_landmarks:
                 hand_landmarks = detection_result.hand_landmarks[0]
-                self.process_landmarks(hand_landmarks, image, dt)
                 gesture = self.detect_gesture(hand_landmarks)
+                freeze_cursor = gesture == 'click'
+                self.process_landmarks(hand_landmarks, image, dt, freeze_cursor)
                 self.handle_gestures(gesture)
 
             else:
-                if self.is_dragging:
-                    pyautogui.mouseUp()
-                    self.is_dragging = False
+                self.prev_tip_x = None
+                self.prev_tip_y = None
+                self.click_armed = True
 
             self.draw_guides(image, gesture)
 
@@ -138,24 +129,47 @@ class GestureController:
 
         self.shutdown()
 
-    def process_landmarks(self, hand_landmarks, image, dt):
+    def process_landmarks(self, hand_landmarks, image, dt, freeze_cursor=False):
         # Draw landmarks
         for landmark in hand_landmarks:
             x, y = int(landmark.x * self.frame_width), int(landmark.y * self.frame_height)
             cv2.circle(image, (x, y), 5, (0, 255, 0), -1)
 
-        # Move cursor
+        # Move cursor with relative hand motion + adaptive acceleration.
+        # This makes edge access easier without sacrificing fine precision.
         index_finger_tip = hand_landmarks[8]
         with self.config_lock:
             sensitivity = self.config['SENSITIVITY']
             motion_scale = self.config['MOTION_SCALE']
 
-        effective_scale = sensitivity * motion_scale
-        x = int((index_finger_tip.x - 0.5) * effective_scale * self.screen_width + self.screen_width / 2)
-        y = int((index_finger_tip.y - 0.5) * effective_scale * self.screen_height + self.screen_height / 2)
+        if self.prev_tip_x is None or self.prev_tip_y is None:
+            self.prev_tip_x = index_finger_tip.x
+            self.prev_tip_y = index_finger_tip.y
+            return
+
+        delta_x = index_finger_tip.x - self.prev_tip_x
+        delta_y = index_finger_tip.y - self.prev_tip_y
+        self.prev_tip_x = index_finger_tip.x
+        self.prev_tip_y = index_finger_tip.y
+
+        if freeze_cursor:
+            return
+
+        base_scale = sensitivity * motion_scale
+        motion_speed = np.sqrt(delta_x**2 + delta_y**2)
+        acceleration = 1.0 + min(3.0, motion_speed * 18.0)
+        effective_scale = base_scale * acceleration
+
+        self.cursor_x += delta_x * self.screen_width * effective_scale
+        self.cursor_y += delta_y * self.screen_height * effective_scale
+
+        x = int(self.cursor_x)
+        y = int(self.cursor_y)
 
         x = np.clip(x, 1, self.screen_width - 1)
         y = np.clip(y, 1, self.screen_height - 1)
+        self.cursor_x = x
+        self.cursor_y = y
 
         self.kf_x.predict(dt)
         smoothed_x = int(self.kf_x.update(x)[0, 0])
@@ -166,25 +180,20 @@ class GestureController:
 
     def handle_gestures(self, gesture):
         current_time = time.time()
-        CLICK_COOLDOWN = 0.5
+        CLICK_COOLDOWN = 0.25
 
-        if gesture == 'click' and (current_time - self.last_click_time) > CLICK_COOLDOWN:
+        if gesture == 'click' and self.click_armed and (current_time - self.last_click_time) > CLICK_COOLDOWN:
             pyautogui.click()
             self.last_click_time = current_time
-        elif gesture == 'fist':
-            if not self.is_dragging:
-                pyautogui.mouseDown()
-                self.is_dragging = True
-        elif gesture == 'open_palm':
-            if self.is_dragging:
-                pyautogui.mouseUp()
-                self.is_dragging = False
+            self.click_armed = False
+        elif gesture == 'move':
+            self.click_armed = True
 
     def draw_guides(self, image, gesture):
         # Display FPS
         cv2.putText(image, f"FPS: {self.fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
         cv2.putText(image, f"Gesture: {gesture}", (10, self.frame_height - 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(image, "Gestures: click, fist, open_palm", (10, self.frame_height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(image, "Gesture: click (thumb + index)", (10, self.frame_height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
     def stop(self):
         self.running = False
