@@ -1,6 +1,6 @@
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from src.config import save_config, reset_config
+from config import save_config, reset_config
 
 class SettingsGUI:
     def __init__(self, root, config, lock, on_close_callback):
@@ -29,6 +29,10 @@ class SettingsGUI:
             min_val, max_val = 0, 3.0
             if "THRESHOLD" in key:
                 min_val, max_val = 0, 1.0
+            elif key == "MOVEMENT_DEADZONE":
+                min_val, max_val = 0, 0.03
+            elif key == "MAX_ACCELERATION":
+                min_val, max_val = 1.0, 6.0
 
             slider = ttk.Scale(
                 slider_frame,
@@ -87,7 +91,7 @@ def launch_gui(config, lock, on_close_callback):
 
 if __name__ == "__main__":
     import threading
-    from src.config import load_config
+    from config import load_config
 
     config = load_config()
     lock = threading.Lock()
